@@ -205,3 +205,83 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AWS Credentials
+.aws/
+credentials
+config
+*.pem
+*.ppk
+
+# Environment Variables (already have .env, but add these too)
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# AWS Credential Files
+*_credentials.csv
+*_accessKeys.csv
+*credentials*.csv
+*access*keys*.csv
+
+# SSH Keys
+id_rsa
+id_rsa.pub
+*.key
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Production
+.vercel
+.netlify
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+temp/
+tmp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test coverage
+htmlcov/
+.coverage
+
+# Jupyter Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Any file with "secret" or "private" in name
+*secret*
+*private*
+*SECRET*
+*PRIVATE*
+
+# Backup files
+*.bak
+*.backup
+*.old
