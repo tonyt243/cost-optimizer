@@ -285,3 +285,8 @@ htmlcov/
 *.bak
 *.backup
 *.old
+
+s3/log_sample_text.txt
+s3/output_from_remote.txt
+s3/processed_sample_text.txt
+s3/raw_sample_text.txt
