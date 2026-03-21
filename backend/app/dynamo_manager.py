@@ -99,3 +99,33 @@ def GetItemFromResourceMetrics(key):
     items = response['Item']
 
     return items
+
+def GetItemFromCostAnalysisUsingGSI(key):
+    '''
+    Retrieves an array of items from the CostOptimizer-CostAnalysis table in 
+    DynamoDB using the GSI partition key. The key cannot be a null value.
+    '''
+    if key == None: return None
+
+    response = cost_analysis_table.query(
+        KeyConditionExpression = Key('date').eq(key)
+    )
+
+    items = response['Item']
+
+    return items
+
+def GetItemFromResourceMetricsUsingGSI(key):
+    '''
+    Retrieves an array of items from the CostOptimizer-ResourceMetrics table in 
+    DynamoDB using the GSI partition key. The key cannot be a null value.
+    '''
+    if key == None: return None
+
+    response = resource_metrics_table.query(
+        KeyConditionExpression = Key('resource_type').eq(key)
+    )
+
+    items = response['Item']
+
+    return items
