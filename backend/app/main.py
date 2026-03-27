@@ -1,41 +1,61 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
+from dotenv import load_dotenv
 
+# Import the new metrics router
+from app.metrics import router as metrics_router
+
+# Load environment variables
+load_dotenv()
+
+# Create FastAPI app
 app = FastAPI(
     title="Cost Optimizer API",
-    description="AWS Cloud Resource Cost Optimization API",
+    description="API for AWS cost optimization and resource metrics",
     version="1.0.0"
 )
 
-# Configure CORS
+# CORS middleware (for frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, specify your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Include metrics router
+app.include_router(metrics_router)
+
+
 @app.get("/")
 async def root():
+    """Root endpoint"""
     return {
-        "message": "Welcome to Cost Optimizer API",
-        "status": "running",
-        "version": "1.0.0"
+        "message": "Cost Optimizer API",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "metrics": "/api/metrics"
+        }
     }
+
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "service": "cost-optimizer-backend"
     }
 
+
 @app.get("/api/dashboard/summary")
 async def dashboard_summary():
+    """Dashboard summary endpoint"""
     return {
-        "current_month_cost": 0.00,
-        "projected_cost": 0.00,
-        "potential_savings": 0.00,
-        "optimization_score": 0
+        "message": "Dashboard summary",
+        "status": "active"
     }
