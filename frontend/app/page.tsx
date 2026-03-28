@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
-// API Base URL - your EC2 server
+// API Base URL
 const API_URL = 'http://35.85.216.208:8000';
 
 interface MetricsSummary {
