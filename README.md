@@ -23,11 +23,11 @@ Cloud Cost Optimizer is a full-stack AWS monitoring platform built for teams who
 ---
  
 ## Tech Stack
-| Frontend | Next.js, TypeScript, Tailwind CSS |
-| Backend | Python, FastAPI |
-| Database | AWS DynamoDB |
-| Cloud | AWS EC2, S3, Lambda, IAM |
-| Deployment | Vercel (frontend), AWS EC2 (backend) |
+- **Frontend**: Next.js, TypeScript, Tailwind CSS 
+- **Backend**: Python, FastAPI 
+- **Database**: AWS DynamoDB 
+- **Cloud**: AWS EC2, S3, Lambda, IAM 
+- **Deployment**: Vercel (frontend), AWS EC2 (backend) 
  
 ---
 ## Prerequisites
