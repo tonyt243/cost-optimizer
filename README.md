@@ -14,7 +14,7 @@ Scalar is a serverless AWS monitoring platform that provides real-time visibilit
 
 - **Automated Metrics Collection** — Hourly EC2 CPU/network metrics and S3 storage data via AWS CloudWatch
 - **Cost Analysis Engine** — Daily cost calculations for EC2 instances and S3 buckets with historical tracking
-- **AI-Powered Recommendations** — Detects underutilized instances (CPU < 10%) and idle resources with savings estimates
+- **Automated Recommendations** — Detects underutilized instances (CPU < 10%) and idle resources with savings estimates
 - **REST API** — FastAPI backend with endpoints for metrics, cost summaries, trends, and recommendations
 - **Real-Time Dashboard** — Next.js frontend with live charts, cost breakdowns, and optimization insights
 - **Serverless Architecture** — Lambda functions triggered by EventBridge for fully automated data pipeline
