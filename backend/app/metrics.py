@@ -1,339 +1,394 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List
-from datetime import datetime, timedelta
-from pydantic import BaseModel
 import boto3
 from boto3.dynamodb.conditions import Key
+from datetime import datetime, timedelta
 from decimal import Decimal
-import os
 
-# Initialize router
-router = APIRouter(prefix="/api/metrics", tags=["metrics"])
+router = APIRouter()
 
 # Initialize DynamoDB
-dynamodb = boto3.resource('dynamodb', region_name=os.getenv('AWS_REGION', 'us-west-2'))
-metrics_table = dynamodb.Table(os.getenv('DYNAMODB_METRICS_TABLE', 'CostOptimizer-ResourceMetrics'))
+dynamodb = boto3.resource('dynamodb', region_name='us-west-2')
 
 
-# Pydantic models for response validation
-class MetricData(BaseModel):
-    """Individual metric data point"""
-    CPUUtilization_Average: float
-    CPUUtilization_Maximum: float
-    NetworkIn_Sum: float
-    NetworkOut_Sum: float
-    DiskReadBytes_Sum: float
-    DiskWriteBytes_Sum: float
-
-
-class ResourceMetric(BaseModel):
-    """Single resource metric item"""
-    resource_id: str
-    timestamp: str
-    resource_type: str
-    instance_type: Optional[str] = None
-    metrics: dict
-    collected_at: str
-
-    class Config:
-        # Allow Decimal types from DynamoDB
-        json_encoders = {
-            Decimal: float
-        }
-
-
-class MetricsResponse(BaseModel):
-    """Response model for metrics endpoints"""
-    count: int
-    items: List[ResourceMetric]
-    next_key: Optional[dict] = None
-
-
-# Helper function to convert DynamoDB Decimal to float
 def decimal_to_float(obj):
-    """Recursively convert Decimal to float in dict"""
+    """Convert Decimal objects to float for JSON serialization"""
     if isinstance(obj, list):
         return [decimal_to_float(item) for item in obj]
     elif isinstance(obj, dict):
         return {key: decimal_to_float(value) for key, value in obj.items()}
     elif isinstance(obj, Decimal):
         return float(obj)
-    else:
-        return obj
+    return obj
 
 
-@router.get("/ec2", response_model=MetricsResponse)
-async def get_all_ec2_metrics(
-    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of items to return"),
-    last_key: Optional[str] = Query(None, description="Pagination key")
-):
+@router.get("/summary")
+async def get_summary():
     """
-    Retrieve all EC2 metrics from DynamoDB.
-    
-    Query parameters:
-    - start_date: Filter metrics from this date onwards (YYYY-MM-DD)
-    - end_date: Filter metrics up to this date (YYYY-MM-DD)
-    - limit: Maximum items to return (1-1000, default: 100)
-    - last_key: For pagination (returned in previous response)
+    Get a summary of all metrics collected
     
     Returns:
-    - count: Number of items returned
-    - items: List of metric data points
-    - next_key: Key for next page (if more data available)
+    - Total metrics count
+    - EC2 metrics count
+    - S3 metrics count
+    - Latest collection timestamp
+    - System status
     """
     
     try:
-        # Build query parameters
-        query_params = {
-            'IndexName': 'DateIndex',
-            'Limit': limit
-        }
+        metrics_table = dynamodb.Table('CostOptimizer-ResourceMetrics')
         
-        # Add date range if provided
-        if start_date and end_date:
-            # Convert dates to ISO format timestamps
-            start_timestamp = f"{start_date}T00:00:00"
-            end_timestamp = f"{end_date}T23:59:59"
-            
-            query_params['KeyConditionExpression'] = (
-                Key('resource_type').eq('EC2') &
-                Key('timestamp').between(start_timestamp, end_timestamp)
-            )
-        elif start_date:
-            start_timestamp = f"{start_date}T00:00:00"
-            query_params['KeyConditionExpression'] = (
-                Key('resource_type').eq('EC2') &
-                Key('timestamp').gte(start_timestamp)
-            )
-        elif end_date:
-            end_timestamp = f"{end_date}T23:59:59"
-            query_params['KeyConditionExpression'] = (
-                Key('resource_type').eq('EC2') &
-                Key('timestamp').lte(end_timestamp)
-            )
-        else:
-            # No date filter - get all EC2 metrics
-            query_params['KeyConditionExpression'] = Key('resource_type').eq('EC2')
+        # Get total count
+        response = metrics_table.scan(
+            Select='COUNT'
+        )
+        total_count = response.get('Count', 0)
         
-        # Add pagination key if provided
-        if last_key:
-            query_params['ExclusiveStartKey'] = eval(last_key)  # In production, use proper JSON parsing
+        # Count by resource type
+        ec2_response = metrics_table.scan(
+            FilterExpression='resource_type = :type',
+            ExpressionAttributeValues={':type': 'EC2'},
+            Select='COUNT'
+        )
+        ec2_count = ec2_response.get('Count', 0)
         
-        # Query DynamoDB
-        response = metrics_table.query(**query_params)
+        s3_response = metrics_table.scan(
+            FilterExpression='resource_type = :type',
+            ExpressionAttributeValues={':type': 'S3'},
+            Select='COUNT'
+        )
+        s3_count = s3_response.get('Count', 0)
         
-        # Convert Decimal to float for JSON serialization
-        items = decimal_to_float(response.get('Items', []))
+        # Get latest timestamp
+        latest_response = metrics_table.scan(
+            Limit=1,
+            ScanIndexForward=False
+        )
+        
+        latest_timestamp = None
+        if latest_response.get('Items'):
+            latest_timestamp = latest_response['Items'][0].get('timestamp')
         
         return {
-            'count': len(items),
-            'items': items,
-            'next_key': response.get('LastEvaluatedKey')
+            'total_metrics': total_count,
+            'ec2_metrics_count': ec2_count,
+            's3_metrics_count': s3_count,
+            'latest_collection': latest_timestamp,
+            'status': 'active'
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving summary: {str(e)}")
 
 
-@router.get("/ec2/{instance_id}", response_model=MetricsResponse)
+@router.get("/ec2")
+async def get_ec2_metrics(
+    limit: int = Query(10, ge=1, le=100, description="Number of records to return"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)")
+):
+    """
+    Get EC2 metrics
+    
+    Parameters:
+    - limit: Number of records to return (1-100)
+    - start_date: Optional start date filter
+    
+    Returns list of EC2 metrics ordered by timestamp (newest first)
+    """
+    
+    try:
+        metrics_table = dynamodb.Table('CostOptimizer-ResourceMetrics')
+        
+        if start_date:
+            # Query with date filter
+            start_timestamp = f"{start_date}T00:00:00"
+            end_timestamp = f"{start_date}T23:59:59"
+            
+            response = metrics_table.query(
+                IndexName='DateIndex',
+                KeyConditionExpression=Key('resource_type').eq('EC2') & Key('timestamp').between(start_timestamp, end_timestamp),
+                Limit=limit,
+                ScanIndexForward=False
+            )
+        else:
+            # Scan without date filter
+            response = metrics_table.scan(
+                FilterExpression='resource_type = :type',
+                ExpressionAttributeValues={':type': 'EC2'},
+                Limit=limit
+            )
+        
+        items = decimal_to_float(response.get('Items', []))
+        
+        # Sort by timestamp descending
+        items.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        return {
+            'count': len(items),
+            'items': items
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving EC2 metrics: {str(e)}")
+
+
+@router.get("/ec2/{instance_id}")
 async def get_ec2_instance_metrics(
     instance_id: str,
-    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of items to return"),
-    last_key: Optional[str] = Query(None, description="Pagination key")
+    limit: int = Query(24, ge=1, le=100),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)")
 ):
     """
-    Retrieve metrics for a specific EC2 instance.
+    Get metrics for a specific EC2 instance
     
-    Path parameters:
-    - instance_id: EC2 instance ID (e.g., i-03fcdfc149b765c98)
-    
-    Query parameters:
-    - start_date: Filter metrics from this date onwards (YYYY-MM-DD)
-    - end_date: Filter metrics up to this date (YYYY-MM-DD)
-    - limit: Maximum items to return (1-1000, default: 100)
-    - last_key: For pagination
-    
-    Returns:
-    - count: Number of items returned
-    - items: List of metric data points for this instance
-    - next_key: Key for next page (if more data available)
+    Parameters:
+    - instance_id: EC2 instance ID
+    - limit: Number of records to return
+    - start_date: Optional start date filter
     """
     
     try:
-        # Build query parameters
-        query_params = {
-            'Limit': limit
-        }
+        metrics_table = dynamodb.Table('CostOptimizer-ResourceMetrics')
         
-        # Add date range if provided
-        if start_date and end_date:
+        if start_date:
             start_timestamp = f"{start_date}T00:00:00"
-            end_timestamp = f"{end_date}T23:59:59"
+            end_timestamp = f"{start_date}T23:59:59"
             
-            query_params['KeyConditionExpression'] = (
-                Key('resource_id').eq(instance_id) &
-                Key('timestamp').between(start_timestamp, end_timestamp)
-            )
-        elif start_date:
-            start_timestamp = f"{start_date}T00:00:00"
-            query_params['KeyConditionExpression'] = (
-                Key('resource_id').eq(instance_id) &
-                Key('timestamp').gte(start_timestamp)
-            )
-        elif end_date:
-            end_timestamp = f"{end_date}T23:59:59"
-            query_params['KeyConditionExpression'] = (
-                Key('resource_id').eq(instance_id) &
-                Key('timestamp').lte(end_timestamp)
+            response = metrics_table.query(
+                KeyConditionExpression=Key('resource_id').eq(instance_id) & Key('timestamp').between(start_timestamp, end_timestamp),
+                Limit=limit,
+                ScanIndexForward=False
             )
         else:
-            # No date filter - get all metrics for this instance
-            query_params['KeyConditionExpression'] = Key('resource_id').eq(instance_id)
-        
-        # Add pagination key if provided
-        if last_key:
-            query_params['ExclusiveStartKey'] = eval(last_key)
-        
-        # Query DynamoDB
-        response = metrics_table.query(**query_params)
+            response = metrics_table.query(
+                KeyConditionExpression=Key('resource_id').eq(instance_id),
+                Limit=limit,
+                ScanIndexForward=False
+            )
         
         items = decimal_to_float(response.get('Items', []))
         
-        # Check if instance exists
-        if not items and not last_key:
-            raise HTTPException(status_code=404, detail=f"No metrics found for instance {instance_id}")
-        
         return {
+            'instance_id': instance_id,
             'count': len(items),
-            'items': items,
-            'next_key': response.get('LastEvaluatedKey')
+            'items': items
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving instance metrics: {str(e)}")
 
 
-@router.get("/s3", response_model=MetricsResponse)
-async def get_all_s3_metrics(
-    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of items to return"),
-    last_key: Optional[str] = Query(None, description="Pagination key")
+@router.get("/s3")
+async def get_s3_metrics(
+    limit: int = Query(10, ge=1, le=100)
 ):
     """
-    Retrieve all S3 metrics from DynamoDB.
+    Get S3 bucket metrics
     
-    Query parameters:
-    - start_date: Filter metrics from this date onwards (YYYY-MM-DD)
-    - end_date: Filter metrics up to this date (YYYY-MM-DD)
-    - limit: Maximum items to return (1-1000, default: 100)
-    - last_key: For pagination
-    
-    Returns:
-    - count: Number of items returned
-    - items: List of S3 metric data points
-    - next_key: Key for next page (if more data available)
+    Returns latest metrics for S3 buckets
     """
     
     try:
-        query_params = {
-            'IndexName': 'DateIndex',
-            'Limit': limit
-        }
+        metrics_table = dynamodb.Table('CostOptimizer-ResourceMetrics')
         
-        # Add date range if provided
-        if start_date and end_date:
-            start_timestamp = f"{start_date}T00:00:00"
-            end_timestamp = f"{end_date}T23:59:59"
-            
-            query_params['KeyConditionExpression'] = (
-                Key('resource_type').eq('S3') &
-                Key('timestamp').between(start_timestamp, end_timestamp)
-            )
-        elif start_date:
-            start_timestamp = f"{start_date}T00:00:00"
-            query_params['KeyConditionExpression'] = (
-                Key('resource_type').eq('S3') &
-                Key('timestamp').gte(start_timestamp)
-            )
-        elif end_date:
-            end_timestamp = f"{end_date}T23:59:59"
-            query_params['KeyConditionExpression'] = (
-                Key('resource_type').eq('S3') &
-                Key('timestamp').lte(end_timestamp)
-            )
-        else:
-            query_params['KeyConditionExpression'] = Key('resource_type').eq('S3')
-        
-        if last_key:
-            query_params['ExclusiveStartKey'] = eval(last_key)
-        
-        response = metrics_table.query(**query_params)
+        response = metrics_table.scan(
+            FilterExpression='resource_type = :type',
+            ExpressionAttributeValues={':type': 'S3'},
+            Limit=limit
+        )
         
         items = decimal_to_float(response.get('Items', []))
         
+        # Sort by timestamp descending
+        items.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
         return {
             'count': len(items),
-            'items': items,
-            'next_key': response.get('LastEvaluatedKey')
+            'items': items
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving S3 metrics: {str(e)}")
 
 
-@router.get("/summary")
-async def get_metrics_summary():
+@router.get("/costs/summary")
+async def get_cost_summary(
+    days: int = Query(7, ge=1, le=90, description="Number of days to analyze")
+):
     """
-    Get a summary of collected metrics.
+    Get cost summary for the last N days
     
     Returns:
-    - Total count of EC2 metrics
-    - Total count of S3 metrics
-    - Latest collection timestamp
-    - Number of unique resources
+    - Total costs
+    - Average daily cost
+    - Cost breakdown by service
+    - Cost trend
     """
     
     try:
-        # Get EC2 metrics count
-        ec2_response = metrics_table.query(
-            IndexName='DateIndex',
-            KeyConditionExpression=Key('resource_type').eq('EC2'),
-            Select='COUNT'
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        # Query cost analysis data
+        response = dynamodb.Table('CostOptimizer-CostAnalysis').scan(
+            FilterExpression='#d BETWEEN :start AND :end',
+            ExpressionAttributeNames={'#d': 'date'},
+            ExpressionAttributeValues={
+                ':start': start_date.strftime('%Y-%m-%d'),
+                ':end': end_date.strftime('%Y-%m-%d')
+            }
         )
         
-        # Get S3 metrics count
-        s3_response = metrics_table.query(
-            IndexName='DateIndex',
-            KeyConditionExpression=Key('resource_type').eq('S3'),
-            Select='COUNT'
-        )
+        items = decimal_to_float(response.get('Items', []))
         
-        # Get latest EC2 metric for timestamp
-        latest_ec2 = metrics_table.query(
-            IndexName='DateIndex',
-            KeyConditionExpression=Key('resource_type').eq('EC2'),
-            ScanIndexForward=False,  # Descending order
-            Limit=1
-        )
+        if not items:
+            return {
+                'total_cost': 0,
+                'average_daily_cost': 0,
+                'ec2_total': 0,
+                's3_total': 0,
+                'days_analyzed': 0
+            }
         
-        latest_timestamp = None
-        if latest_ec2.get('Items'):
-            latest_timestamp = latest_ec2['Items'][0].get('timestamp')
+        # Calculate totals
+        total_cost = sum(item.get('total_cost', 0) for item in items)
+        ec2_total = sum(item.get('ec2_cost', 0) for item in items)
+        s3_total = sum(item.get('s3_cost', 0) for item in items)
         
         return {
-            'total_metrics': ec2_response['Count'] + s3_response['Count'],
-            'ec2_metrics_count': ec2_response['Count'],
-            's3_metrics_count': s3_response['Count'],
-            'latest_collection': latest_timestamp,
-            'status': 'active'
+            'total_cost': round(total_cost, 2),
+            'average_daily_cost': round(total_cost / len(items), 2),
+            'ec2_total': round(ec2_total, 2),
+            's3_total': round(s3_total, 2),
+            'days_analyzed': len(items),
+            'cost_breakdown': {
+                'EC2': round(ec2_total, 2),
+                'S3': round(s3_total, 2)
+            }
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving cost summary: {str(e)}")
+
+
+@router.get("/costs/trends")
+async def get_cost_trends(
+    days: int = Query(30, ge=1, le=90, description="Number of days")
+):
+    """
+    Get daily cost trends over time
+    
+    Returns array of daily costs for charting
+    """
+    
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        response = dynamodb.Table('CostOptimizer-CostAnalysis').scan(
+            FilterExpression='#d BETWEEN :start AND :end',
+            ExpressionAttributeNames={'#d': 'date'},
+            ExpressionAttributeValues={
+                ':start': start_date.strftime('%Y-%m-%d'),
+                ':end': end_date.strftime('%Y-%m-%d')
+            }
+        )
+        
+        items = decimal_to_float(response.get('Items', []))
+        
+        # Sort by date
+        items.sort(key=lambda x: x.get('date', ''))
+        
+        # Format for charting
+        trends = [
+            {
+                'date': item.get('date'),
+                'total_cost': round(item.get('total_cost', 0), 2),
+                'ec2_cost': round(item.get('ec2_cost', 0), 2),
+                's3_cost': round(item.get('s3_cost', 0), 2)
+            }
+            for item in items
+        ]
+        
+        return {
+            'trends': trends,
+            'days': len(trends)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving cost trends: {str(e)}")
+
+
+@router.get("/recommendations")
+async def get_recommendations(
+    status: Optional[str] = Query(None, description="Filter by status: open, applied, dismissed")
+):
+    """
+    Get cost optimization recommendations
+    
+    Returns active recommendations with potential savings
+    """
+    
+    try:
+        recommendations_table = dynamodb.Table('CostOptimizer-Recommendations')
+        
+        if status:
+            response = recommendations_table.scan(
+                FilterExpression='#s = :status',
+                ExpressionAttributeNames={'#s': 'status'},
+                ExpressionAttributeValues={':status': status}
+            )
+        else:
+            response = recommendations_table.scan()
+        
+        items = decimal_to_float(response.get('Items', []))
+        
+        # Sort by created_at descending (newest first)
+        items.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        
+        # Calculate total savings
+        total_monthly_savings = sum(
+            item.get('estimated_savings_monthly', 0) 
+            for item in items 
+            if item.get('status') == 'open'
+        )
+        
+        total_yearly_savings = total_monthly_savings * 12
+        
+        return {
+            'recommendations': items,
+            'count': len(items),
+            'total_monthly_savings': round(total_monthly_savings, 2),
+            'total_yearly_savings': round(total_yearly_savings, 2)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving recommendations: {str(e)}")
+
+
+@router.get("/recommendations/{recommendation_id}")
+async def get_recommendation_detail(recommendation_id: str):
+    """
+    Get details for a specific recommendation
+    """
+    
+    try:
+        recommendations_table = dynamodb.Table('CostOptimizer-Recommendations')
+        
+        # Query by recommendation_id
+        response = recommendations_table.scan(
+            FilterExpression='recommendation_id = :rid',
+            ExpressionAttributeValues={':rid': recommendation_id}
+        )
+        
+        items = decimal_to_float(response.get('Items', []))
+        
+        if not items:
+            raise HTTPException(status_code=404, detail=f"Recommendation {recommendation_id} not found")
+        
+        return items[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving recommendation: {str(e)}")
